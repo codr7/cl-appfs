@@ -10,4 +10,7 @@
   :entry-point "cl-appfs:main"
   :depends-on ("cffi" "local-time")
   :serial t
-  :components ((:file "pg")))
+  :components ((:file "util")
+	       (:file "pg")
+	       (:file "db")
+	       (:file "fs")))

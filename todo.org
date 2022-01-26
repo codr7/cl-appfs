@@ -1,3 +1,11 @@
-* add async pg cffi interface
-* add tables
-** add dirs/dir-ents
+** add db:model class
+*** exists flag
+*** model-table method
+*** add classes for users/dirs/dir-ents
+*** write store model/load-from model rec fns 
+**** convert to/from rec
+** add cl-appfs:dirs/dir-ents
+* add transaction/*transaction*
+* add prepare-query
+** add PQsendPrepare
+** add PQsendQueryPrepared
