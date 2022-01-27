@@ -1,7 +1,16 @@
 (defpackage cl-appfs-db
   (:use cffi cl cl-appfs-pg)
-  (:import-from cl-appfs-util str!)
-  (:export *connection* definition exists? new-column new-table table with-db))
+  (:import-from cl-appfs-util str! syms!)
+  (:import-from local-time format-timestring parse-timestring timestamp)
+  (:export *connection*
+	   boolean-column
+	   class-model column
+	   definition exists?
+	   model-load model-store model-table
+	   name new-boolean-column new-string-column new-timestamp-column new-table
+	   string-column struct-model
+	   table table-create table-drop table-exists? timestamp-column
+	   with-connection))
 
 (in-package cl-appfs-db)
 
@@ -55,23 +64,75 @@
      ,@body
      (PQfinish *connection*)))
 
+(defmethod to-sql ((self string))
+  (let ((out (copy-seq self)))
+    (dotimes (i (length out))
+      (let ((c (char out i)))
+	(when (char= c #\-)
+	  (setf (char out i) #\_))))
+    out))
+
+(defmethod to-sql ((self symbol))
+  (to-sql (string-downcase (symbol-name self))))
+
 (defclass definition ()
   ((name :initarg :name :initform (error "missing name") :reader name)))
+
+(defmethod to-sql ((self definition))
+  (to-sql (name self)))
 
 (defclass column (definition)
   ())
 
-(defclass string-column (column)
-  ())
+(defmacro define-column-type (name data-type)
+  `(progn
+    (defclass ,name (column)
+      ())
+    
+    (defun ,(syms! 'new- name) (name)
+      (make-instance ',name :name name))
+    
+    (defmethod data-type ((self ,name))
+      ,data-type)))
 
-(defun new-string-column (name)
-  (make-instance 'string-column :name name))
+(define-column-type boolean-column "BOOLEAN")
 
-(defmethod data-type ((self string-column))
-  "TEXT")
+(defun boolean-encode (val)
+  (if val "t" "f"))
+
+(defmethod column-encode ((self boolean-column) val)
+  (boolean-encode val))
+
+(defun boolean-decode (val)
+  (string= val "t"))
+
+(defmethod column-decode ((self boolean-column) val)
+  (boolean-decode val))
+
+(define-column-type string-column "TEXT")
+
+(defmethod column-encode ((self string-column) val)
+  val)
+
+(defmethod column-decode ((self string-column) val)
+  val)
+
+(define-column-type timestamp-column "TIMESTAMP")
+
+(defun timestamp-encode (val)
+  (format-timestring nil val)) 
+
+(defmethod column-encode ((self timestamp-column) val)
+  (timestamp-encode val))
+
+(defun timestamp-decode (val)
+  (parse-timestring val))
+
+(defmethod column-decode ((self timestamp-column) val)
+  (timestamp-decode val))
 
 (defclass relation ()
-  ((columns :initform (make-array 0 :element-type 'column :fill-pointer 0))
+  ((columns :initform (make-array 0 :element-type 'column :fill-pointer 0) :reader columns)
    (column-lookup :initform (make-hash-table))))
 
 (defclass key (definition relation)
@@ -87,7 +148,18 @@
 (defclass table (definition relation)
   ((primary-key :reader primary-key)))
 
-(defun new-table (name primary-cols &rest cols)
+(defmacro do-columns ((col rel) &body body)
+  `(dotimes (i (length (columns ,rel)))
+    (let ((,col (aref (columns ,rel) i)))
+      (,@body))))
+
+(defun map-columns (body rel)
+  (let ((cs (columns rel)) out)
+    (dotimes (i (length cs))
+      (push (funcall body (aref cs i)) out))
+    (nreverse out)))
+
+(defun new-table (name primary-cols cols)
   (let ((tbl (make-instance 'table :name name)))
     (with-slots (columns column-lookup primary-key) tbl
       (dolist (c cols)
@@ -99,9 +171,6 @@
 		     (mapcar (lambda (c) (aref columns (gethash c column-lookup))) primary-cols))))
     tbl))
 
-(defun decode-bool (val)
-  (string= val "t"))
-
 (defun table-exists? (self)
   (send-query "SELECT EXISTS (
                  SELECT FROM pg_tables
@@ -111,7 +180,7 @@
   (let ((r (get-result)))
     (assert (= (PQntuples r) 1))
     (assert (= (PQnfields r) 1))
-    (let ((result (decode-bool (PQgetvalue r 0 0))))
+    (let ((result (boolean-decode (PQgetvalue r 0 0))))
       (PQclear r)
       (assert (null (get-result)))
       result)))
@@ -119,15 +188,15 @@
 (defmethod exists? ((self table))
   (table-exists? self))
 
-(defun create-table (self)
+(defun table-create (self)
   (let ((sql (with-output-to-string (out)
-	       (format out "CREATE TABLE ~a (" (str! (name self)))
+	       (format out "CREATE TABLE ~a (" (to-sql self))
 	       (with-slots (columns) self
 		 (dotimes (i (length columns))
 		   (let ((c (aref columns i)))
 		     (unless (eq c (aref columns 0))
 		       (format out ", "))
-		     (format out "~a ~a" (str! (name c)) (data-type c))))
+		     (format out "~a ~a" (to-sql c) (data-type c))))
 		 (format out ")")))))
     (send-query sql '()))
   (multiple-value-bind (r s) (get-result)
@@ -137,10 +206,10 @@
   nil)
 
 (defmethod create ((self table))
-  (create-table self))
+  (table-create self))
 
-(defun drop-table (self)
-  (let ((sql (format nil "DROP TABLE ~a" (str! (name self)))))
+(defun table-drop (self)
+  (let ((sql (format nil "DROP TABLE ~a" (to-sql self))))
     (send-query sql '()))
   (multiple-value-bind (r s) (get-result)
     (assert (eq s :PGRES_COMMAND_OK))    
@@ -149,20 +218,19 @@
   nil)
 
 (defmethod drop ((self table))
-  (drop-table self))
+  (table-drop self))
 
-(defun insert-record (tbl &rest rec)
+(defun insert-record (tbl rec)
   (let ((sql (with-output-to-string (out)
-	       (format out "INSERT INTO ~a (" (str! (name tbl)))
+	       (format out "INSERT INTO ~a (" (to-sql tbl))
 	       (with-slots (column-lookup) tbl
 		 (dolist (f rec)
 		   (let ((c (first f)))
-		     (unless (gethash c column-lookup)
+		     (unless (gethash (name c) column-lookup)
 		       (error "unknown column: ~a" c))
 		     (unless (eq f (first rec))
 		       (format out ", "))
-		     (format out "~a" (str! (name c)))))
-		 (format out ")"))
+		     (format out "~a" (to-sql c)))))
 	       (format out ") VALUES (")
 	       (dotimes (i (length rec))
 		 (unless (zerop i)
@@ -176,9 +244,9 @@
   (assert (null (get-result)))
   nil)
 
-(defun update-record (tbl &rest rec)
+(defun update-record (tbl rec)
   (let ((sql (with-output-to-string (out)
-	       (format out "UPDATE ~a SET " (str! (name tbl)))
+	       (format out "UPDATE ~a SET " (to-sql tbl))
 	       (let ((param-count 0))
 		 (with-slots (column-lookup columns) tbl
 		   (dolist (f rec)
@@ -187,13 +255,13 @@
 			 (error "unknown column: ~a" c))
 		       (unless (eq f (first rec))
 			 (format out ", "))
-		       (format out "~a=$~a" (str! (name c)) (incf param-count)))))
+		       (format out "~a=$~a" (to-sql c) (incf param-count)))))
 		 (format out " WHERE "))
 	       (let ((i 0))
 		 (dolist (f rec)
 		   (unless (zerop i)
 		     (format out " AND "))
-		   (format out "~a=$~a" (str! (name (first f))) (incf i))))
+		   (format out "~a=$~a" (to-sql (first f)) (incf i))))
 	       (format out ")"))))
     (send-query sql (mapcar #'rest rec)))
   (multiple-value-bind (r s) (get-result)
@@ -201,6 +269,37 @@
     (PQclear r))
   (assert (null (get-result)))
   nil)
+
+(defstruct struct-model
+  (exists? nil :type boolean))
+
+(defmethod exists? ((self struct-model))
+  (slot-value self 'exists?))
+
+(defclass class-model ()
+  ((exists? :initarg :exists? :initform nil :reader exists?)))
+
+(defmethod model-table (self))
+
+(defmethod model-load (self rec)
+    (let* ((tbl (model-table self)))
+      (dolist (f rec)
+	(let* ((c (first f))
+	       (cn (name c)))
+	  (with-slots (column-lookup) tbl
+	    (when (gethash cn column-lookup)
+	      (setf (slot-value self cn) (column-decode c (rest (assoc rec c)))))))))
+    rec)
+
+(defmethod model-store (self)
+  (let* ((tbl (model-table self))
+	 (rec (map-columns (lambda (c) (cons c (column-encode c (slot-value self (name c))))) tbl)))
+    (with-slots (exists?) self
+      (if exists?
+	  (update-record tbl rec)
+	  (progn
+	    (insert-record tbl rec)
+	    (setf exists? t))))))
 
 (defun tests ()
   (with-connection ("test" "test" "test")
@@ -214,7 +313,7 @@
       (PQclear r))
     (assert (null (get-result)))
     
-    (let ((tbl (new-table 'foo '(bar) (new-string-column 'bar))))
+    (let ((tbl (new-table 'foo '(bar) (list (new-string-column 'bar)))))
       (assert (not (exists? tbl)))
       (create tbl)
       (assert (exists? tbl))

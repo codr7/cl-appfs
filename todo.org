@@ -1,10 +1,9 @@
-** add db:model class
-*** exists flag
-*** model-table method
-*** add classes for users/dirs/dir-ents
-*** write store model/load-from model rec fns 
-**** convert to/from rec
-** add cl-appfs:dirs/dir-ents
+* create primary-key in table-create
+** add key-create
+* add cl-appfs:dirs/dir-ents
+* add login/libsodium
+** add user.public-key
+** add user.password-hash
 * add transaction/*transaction*
 * add prepare-query
 ** add PQsendPrepare

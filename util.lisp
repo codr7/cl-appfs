@@ -1,6 +1,6 @@
 (defpackage cl-appfs-util
   (:use cl)
-  (:export dohash str! sym!))
+  (:export dohash str! sym! syms!))
 
 (in-package cl-appfs-util)
 
@@ -28,3 +28,9 @@
 
 (defmethod sym! ((val string))
   (intern (string-upcase val)))
+
+(defun syms! (&rest vals)
+  (intern
+   (with-output-to-string (out)
+     (dolist (v vals)
+       (princ v out)))))
