@@ -1,9 +1,11 @@
 * create primary-key in table-create
 ** add key-create
-* add cl-appfs:dirs/dir-ents
-* add login/libsodium
-** add user.public-key
-** add user.password-hash
+* add foreign key folder-created-by
+* add entry struct/table
+** folder foreign key
+** name
+** type (enum)
+*** FOLDER / LISP / TEXT
 * add transaction/*transaction*
 * add prepare-query
 ** add PQsendPrepare
