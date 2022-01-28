@@ -149,9 +149,10 @@
   ((primary-key :reader primary-key)))
 
 (defmacro do-columns ((col rel) &body body)
-  `(dotimes (i (length (columns ,rel)))
-    (let ((,col (aref (columns ,rel) i)))
-      (,@body))))
+  (let ((i (gensym)))
+    `(dotimes (,i (length (columns ,rel)))
+       (let ((,col (aref (columns ,rel) ,i)))
+	 ,@body))))
 
 (defun map-columns (body rel)
   (let ((cs (columns rel)) out)
@@ -220,6 +221,32 @@
 (defmethod drop ((self table))
   (table-drop self))
 
+(defun load-record (tbl key-cond)
+  (let ((sql (with-output-to-string (out)
+	       (format out "SELECT ")
+	       (let ((i 0))
+		 (do-columns (c tbl)
+		   (unless (zerop i)
+		     (format out ", "))
+		   (format out (to-sql c))
+		   (incf i)))
+
+	       (format out " FROM ~a WHERE " (to-sql tbl))
+	       
+	       (let ((param-count 0))
+		 (dolist (k key-cond)
+		   (format out "~a=$~a" (to-sql (first k)) (incf param-count)))))))
+    (send-query sql (mapcar #'rest key-cond)))
+  (multiple-value-bind (r s) (get-result)
+    (assert (eq s :PGRES_TUPLES_OK))
+    (let (out (i 0))
+      (do-columns (c tbl)
+	(push (cons c (column-decode c (PQgetvalue r 0 i))) out)
+	(incf i))
+      (PQclear r)
+      (assert (null (get-result)))
+      out)))
+
 (defun insert-record (tbl rec)
   (let ((sql (with-output-to-string (out)
 	       (format out "INSERT INTO ~a (" (to-sql tbl))
@@ -269,6 +296,17 @@
     (PQclear r))
   (assert (null (get-result)))
   nil)
+
+(defstruct reference
+  (table (error "missing table") :type table)
+  (key-cond (error "missing key") :type list)
+  (record nil))
+
+(defun new-reference (table key-cond)
+  (make-reference :table table :key-cond key-cond))
+  
+(defun get-record (self)
+  (or (reference-record self) (load-record (reference-table self) (reference-key-cond self))))
 
 (defstruct struct-model
   (exists? nil :type boolean))
